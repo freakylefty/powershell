@@ -42,7 +42,7 @@ Function DownloadImage {
 	
 	# Get temp directory and create subfolder if necessary
 	$tmp = $env:temp
-	$dir = $tmp + "\andy\earthporn"
+	$dir = $tmp + "\powershell\quotify"
 	New-Item -ItemType Directory -Force -Path ($dir) >$null 2>&1
 
 	# Download image
