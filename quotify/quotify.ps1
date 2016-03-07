@@ -1,8 +1,4 @@
 PARAM ([string]$dir = [Environment]::GetFolderPath("Desktop"))
-if (-Not((Test-Path $dir) -Eq $True)) {
-	Write-Host Invalid output folder: $dir
-	Exit
-}
 
 Function DeleteIfExists {
 	[CmdletBinding()]
@@ -34,21 +30,46 @@ Function Shuffle {
 }
 
 
+Function RemoveFirstElement {
+	[CmdletBinding()]
+	PARAM ([Parameter(Mandatory=$true)][Array]$array)
+	
+	if ($array.length -le 1) {
+		# If empty or only one element, return empty array
+		return @()
+	} else {
+		# Otherwise slice out first element
+		return $array[1..($array.length - 1)]
+	}
+}
+
+
+Function GetTempDir {
+	# Get temp directory and create subfolder if necessary
+	$tmp = $env:temp
+	$dir = $tmp + "\powershell\quotify"
+	New-Item -ItemType Directory -Force -Path ($dir) >$null 2>&1
+	return $dir;
+}
+
+
 Function DownloadImage {
 	[CmdletBinding()]
 	PARAM ([Parameter(Mandatory=$true)][String]$url)
 	
 	$web = New-Object Net.WebClient
 	
-	# Get temp directory and create subfolder if necessary
-	$tmp = $env:temp
-	$dir = $tmp + "\powershell\quotify"
-	New-Item -ItemType Directory -Force -Path ($dir) >$null 2>&1
+	$dir = GetTempDir
 
 	# Download image
 	$imageFile = $dir + "\image.jpg"
-	$web.DownloadFile($url, $imageFile)
-
+	Try {
+		$web.DownloadFile($url, $imageFile)
+	}
+	Catch {
+		OutInfo("Error downloading image: " + ($url))
+		Exit
+	}
 	return $imageFile
 }
 
@@ -57,22 +78,29 @@ Function GetImageData {
 	[CmdletBinding()]
 	PARAM ([Parameter(Mandatory=$true)][Array]$sources)
 	
-	$source = GetRandomElement($sources)
-	
-	$web = New-Object Net.WebClient
-	$response = $web.DownloadString("https://www.reddit.com/r/" + $source + ".json") | ConvertFrom-Json
+	Try {
+		$source = GetRandomElement($sources)
+		
+		$web = New-Object Net.WebClient
+		$url = "https://www.reddit.com/r/" + $source + ".json"
+		$response = $web.DownloadString($url) | ConvertFrom-Json
 
-	# Iterate through posts to find one we can download
-	$data = $null
-	$response.data.children = Shuffle -array $response.data.children
-	for ($index = 0; $index -lt $response.data.children.length; $index++) {
-		$curr = $response.data.children[$index].data
-		if ($curr.url.toLower().EndsWith(".jpg") -Or $curr.url.toLower().EndsWith(".png")) {
-			$data = $curr.url, $curr.author
-			break;
+		# Iterate through posts to find one we can download
+		$data = $null
+		$response.data.children = Shuffle -array $response.data.children
+		for ($index = 0; $index -lt $response.data.children.length; $index++) {
+			$curr = $response.data.children[$index].data
+			if ($curr.url.toLower().EndsWith(".jpg") -Or $curr.url.toLower().EndsWith(".png")) {
+				$data = $curr.url, $curr.author
+				break;
+			}
 		}
+		return $data
 	}
-	return $data
+	Catch {
+		OutInfo("Error downloading image: " + $url)
+		Exit
+	}
 }
 
 
@@ -80,22 +108,35 @@ Function GetQuoteData {
 	[CmdletBinding()]
 	PARAM ([Parameter(Mandatory=$true)][Array]$sources)
 	
-	$source = GetRandomElement($sources)
-	
-	$web = New-Object Net.WebClient
-	$response = $web.DownloadString("https://www.reddit.com/r/" + $source + ".json") | ConvertFrom-Json
-	$quotes = $response.data.children;
-	
-	$quote = GetRandomElement($quotes).data
-	return $quote.title, $quote.author
+	Try {
+		$source = GetRandomElement($sources)
+		
+		$web = New-Object Net.WebClient
+		$response = $web.DownloadString("https://www.reddit.com/r/" + $source + ".json") | ConvertFrom-Json
+		$quotes = $response.data.children;
+		$quotes = RemoveFirstElement($quotes)
+		$quote = GetRandomElement($quotes).data
+		return $quote.title, $quote.author
+	}
+	Catch {
+		OutInfo("Error getting quote")
+		Exit
+	}
+}
+
+
+Function GetFilename {
+	$result = (Get-Date -format "yyyy-MM-dd HH-mm-ss")
+	return $result
 }
 
 
 Function GetDestPath {
-	$outFile = (Get-Date -format "yyyy-MM-dd HH-mm-ss") + ".png"
+	$outFile = (GetFilename) + ".png"
 	$dest = [System.IO.Path]::GetFullPath((resolve-path $dir)) + "\" + $outFile
 	return $dest
 }
+
 
 Function GetImageScale {
 	[CmdletBinding()]
@@ -137,13 +178,19 @@ Function AddTextToImage {
     
     $srcImg = [System.Drawing.Image]::FromFile($sourcePath)
 	
+	$targetWidth = 1920
+	$targetHeight = 1280
+	
 	$srcWidth = $srcImg.width
 	$srcHeight = $srcImg.height
-	
-	$scale = GetImageScale -srcWidth $srcWidth -srcHeight $srcHeight -destWidth 1920 -destHeight 1280
+	OutDebug("Source size is " + $srcWidth + "x" + $srcHeight)
+	OutDebug("Target size is " + $targetWidth + "x" + $targetHeight)
+
+	$scale = GetImageScale -srcWidth $srcWidth -srcHeight $srcHeight -destWidth $targetWidth -destHeight $targetHeight
 	
 	$destWidth = [int]($srcWidth / $scale)
 	$destHeight = [int]($srcHeight / $scale)
+	OutDebug("Final size is " + $destWidth + "x" + $destHeight)
     
     $bmpFile = new-object System.Drawing.Bitmap([int]($destWidth)),([int]($destHeight))
 
@@ -161,12 +208,19 @@ Function AddTextToImage {
 	$charWidth = 30
 	$lineHeight = 90
 	$maxChars = [int]($destWidth / ($charWidth + 2))
- 
-    $lines = GetLines -text $text -maxChars $maxChars
-	for ($index = 0; $index -lt $lines.length; $index ++) {
-		$line = $lines[$index]
-		TOAP -image $image -text $line -size 48 -align Center -x $x -y $y
+	
+	if ($text.length -Le $maxChars) {
+		OutDebug("Writing full quote: " + $text)
+		TOAP -image $image -text $text -size 48 -align Center -x $x -y $y
 		$y = $y + $lineHeight
+	} else {
+		$lines = GetLines -text $text -maxChars $maxChars
+		for ($index = 0; $index -lt $lines.length; $index ++) {
+			$line = $lines[$index]
+			OutDebug("Writing line " + $index + ": " + $line)
+			TOAP -image $image -text $line -size 48 -align Center -x $x -y $y
+			$y = $y + $lineHeight
+		}
 	}
 	
 	TOAP -image $image -text ("u/" + $imageAuthor) -size 16 -align Near -x 10 -y ($destHeight - 60)
@@ -176,6 +230,7 @@ Function AddTextToImage {
     $bmpFile.Dispose()
     $srcImg.Dispose()
 }
+
 
 Function TOAP {
 	[CmdletBinding()]
@@ -198,6 +253,7 @@ Function TOAP {
 	$image.DrawString($text, $font, $white, $x - 2, $y - 2, $format)
 }
 
+
 Function GetLines {
     [CmdletBinding()]
     PARAM (
@@ -207,6 +263,9 @@ Function GetLines {
 	
 	$lines = @()
 	
+	OutDebug("Text: " + $text)
+	OutDebug("Chars to write: " + ($text.length))
+	OutDebug("Maxline length: " + ($maxChars))
 	$words = $text -split " "
 	$index = 0
 	$line = ""
@@ -225,22 +284,59 @@ Function GetLines {
 	return $lines
 }
 
+
+Function WriteLog {
+	[CmdletBinding()]
+    PARAM ([Parameter(Mandatory=$true)][String] $text)
+	
+	if ($enableLogging -Eq $True) {
+		Add-content $logFile -value $text
+	}
+}
+
+
+Function OutDebug {
+	[CmdletBinding()]
+    PARAM ([Parameter(Mandatory=$true)][String] $text)
+	
+	WriteLog -text $text
+	Write-Verbose $text
+}
+
+
+Function OutInfo {
+	[CmdletBinding()]
+    PARAM ([Parameter(Mandatory=$true)][String] $text)
+	
+	WriteLog -text $text
+	Write-Host $text
+}
+
+
 #----------------------------------------------------------------------------
 
+# Setup and checks
+$enableLogging = $True
+if (-Not((Test-Path $dir) -Eq $True)) {
+	Write-Host (Invalid output folder: $dir)
+	Exit
+}
+$logFile = (GetTempDir) + "\" + (GetFilename) + ".log"
+
 # Download data and get URL for top file
-Write-Host "Getting image data"
+OutInfo("Getting image data")
 $imgData = GetImageData -sources "SeaPorn", "SkyPorn", "WinterPorn", "JunglePorn", "earthporn", "waterporn", "cityporn", "Breathless"
 if (-Not $imgData -Or $imgData -Eq $null) {
 	# No valid images found, bail out
-	Write-Host("No valid image found")
+	OutInfo("No valid image found")
 	Exit
 }
 
-Write-Host "Downloading image"
+OutInfo("Downloading image")
 $imageFile = DownLoadImage -url $imgData[0]
 if (-Not $imageFile) {
 	# Could not download image, bail out
-	Write-Host("Could not download image")
+	OutInfo("Could not download image")
 	Exit
 }
 
@@ -249,11 +345,11 @@ Write-Host "Getting quote"
 $quoteData = GetQuoteData -sources @("showerthoughts")
 if (-Not $quoteData -Or $quoteData -Eq $null) {
 	# Could not download quote, bail out
-	Write-Host("Could not download quote")
+	OutInfo("Could not download quote")
 }
 
 # Write to image
-Write-Host "Creating image"
+OutInfo("Creating image")
 $dest = GetDestPath
 AddTextToImage -sourcePath $imageFile -destPath $dest -text $quoteData[0] -imageAuthor $imgData[1] -quoteAuthor $quoteData[1]
 DeleteIfExists -file $imageFile

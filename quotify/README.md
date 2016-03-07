@@ -8,6 +8,4 @@ quotify.ps1 -dir ..\
 
 ##Known issues:
 
-- There's a sticky post at the top of ShowerThoughts that should be filtered out but isn't.  Going to take another look at that soon.
 - Small images aren't handled well, need to be scaled up
-- Rarely, for reasons unknown, the text ends up one letter per line.  Needs some debugging.
