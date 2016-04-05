@@ -270,11 +270,11 @@ Function GetLines {
 	$index = 0
 	$line = ""
 	while ($index -lt $words.length) {
-		$line = $line + " " + $words[$index]
-		if ($line.length -gt $maxChars) {
+		if (($line.length + $words[$index].length) -gt $maxChars) {
 			$lines = $lines += $line
 			$line = ""
 		}
+		$line = $line + " " + $words[$index]
 		$index = $index + 1
 	}
 	if (-Not($line -Eq "")) {
